@@ -36,6 +36,7 @@
         <text name="EHM_UI_WORKING"      text="Working"/>
         <text name="EHM_UI_KB_MOUSE"     text="KB/Mouse"/>
         <text name="EHM_UI_ALL_DEVICES"  text="ALL"/>
+        <text name="EHM_UI_PERIPHERALS_ONLY" text="ALL EXCEPT KB/MOUSE"/>
 
         <!-- Enhanced Settings tab (shared cross-mod convention — see
              ../../../Toolkit/conventions.md "Shared Enhanced Settings tab") -->

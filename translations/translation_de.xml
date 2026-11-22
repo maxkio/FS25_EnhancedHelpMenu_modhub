@@ -32,6 +32,7 @@
         <text name="EHM_UI_WORKING"      text="Arbeitet"/>
         <text name="EHM_UI_KB_MOUSE"     text="Tas/Maus"/>
         <text name="EHM_UI_ALL_DEVICES"  text="ALLE"/>
+        <text name="EHM_UI_PERIPHERALS_ONLY" text="OHNE TASTATUR/MAUS"/>
 
         <!-- Enhanced Settings tab (shared cross-mod convention — see
              ../../../Toolkit/conventions.md "Shared Enhanced Settings tab") -->
