@@ -477,6 +477,7 @@ local function EHM_SETTINGS_getSchema()
     local s = XMLSchema.new("EHM")
     -- toggleState: 0=EHM, 1=F1, 2=both off. Default 0 so absent key → EHM.
     s:register(XMLValueType.INT,  "EHM.ui#state", 0)
+    s:register(XMLValueType.STRING, "EHM.ui#deviceKey")
     for i = 1, #EHM_CATEGORIES do
         s:register(XMLValueType.BOOL, string.format("EHM.filter#cat%d", i), true)
     end
@@ -534,6 +535,7 @@ function EHM_SETTINGS.load(filterEnabled, hiddenActions, hiddenExtraTexts, setti
 
     -- Behaviour settings — schema defaults apply if the file pre-dates the field.
     if settings ~= nil then
+        settings.deviceKey = xmlFile:getValue("EHM.ui#deviceKey")
         local v = xmlFile:getValue("EHM.behavior#showBaseGameHelp")
         settings.showBaseGameHelp = (v == true)
         local rpp = xmlFile:getValue("EHM.behavior#rowsPerPage")
@@ -602,6 +604,9 @@ function EHM_SETTINGS.save(filterEnabled, toggleState, hiddenActions, hiddenExtr
 
     -- Behaviour settings (optional — older callers can pass nil).
     if settings ~= nil then
+        if settings.deviceKey ~= nil then
+            xmlFile:setValue("EHM.ui#deviceKey", settings.deviceKey)
+        end
         xmlFile:setValue("EHM.behavior#showBaseGameHelp",
             settings.showBaseGameHelp == true)
         xmlFile:setValue("EHM.behavior#rowsPerPage",
@@ -1834,6 +1839,10 @@ function EnhancedHelpMenu:deleteMap()
                              self.ovEyeOpen, self.ovEyeHidden}) do
             if ov ~= nil then pcall(function() deleteImageOverlay(ov) end) end
         end
+        for _, ov in pairs(self.deviceBadgeOverlays or {}) do
+            pcall(deleteImageOverlay, ov)
+        end
+        self.deviceBadgeOverlays = nil
         self.overlaysReady = false
         self.overlaysDone  = false
     end
@@ -2115,11 +2124,14 @@ function EnhancedHelpMenu:mouseEvent(posX, posY, isDown, eventUsed, button)
 end
 
 function EnhancedHelpMenu:onCycleDevice()
-    if not self.isVisible then return end
+    if not self.isVisible or #self.deviceModes == 0 then return end
     self.deviceModeIndex = self.deviceModeIndex + 1
     if self.deviceModeIndex > #self.deviceModes then self.deviceModeIndex = 1 end
-    self.selectedDeviceKey = self.deviceModes[self.deviceModeIndex] ~= nil
-        and self.deviceModes[self.deviceModeIndex].key or "NONE"
+    self.selectedDeviceKey = self.deviceModes[self.deviceModeIndex].key
+    if self.settings.deviceKey ~= self.selectedDeviceKey then
+        self.settings.deviceKey = self.selectedDeviceKey
+        EHM_SETTINGS.save(self.filterEnabled, self.toggleState, self.hiddenActions, self.hiddenExtraTexts, self.settings)
+    end
     self.refreshTimer = 0
 end
 
@@ -2343,10 +2355,12 @@ function EnhancedHelpMenu:rebuildDeviceModes()
     self.deviceModes = modes
 
     -- Restore previously selected device if still connected
+    local preferredKey = self.settings.deviceKey or self.selectedDeviceKey
     local found = false
     for i, mode in ipairs(self.deviceModes) do
-        if mode.key == self.selectedDeviceKey then
+        if mode.key == preferredKey then
             self.deviceModeIndex = i
+            self.selectedDeviceKey = mode.key
             found = true
             break
         end
@@ -2486,7 +2500,14 @@ function EnhancedHelpMenu:formatInput(s)
     return s
 end
 
-function EnhancedHelpMenu:getBindings(actionName)
+local GROUPED_DEVICE_IDS = {
+    ["SAITEK HEAVY EQPT. WHEEL & PEDAL"] = "wheel",
+    ["SAITEK SIDE PANEL CONTROL DECK"] = "panel",
+    ["SIMTASK FARMSTICK RIGHT"] = "stick",
+}
+local DEVICE_BADGE_SEPARATOR = "\1"
+
+function EnhancedHelpMenu:getBindings(actionName, plainText, fallback)
     if g_inputBinding == nil or g_inputBinding.nameActions == nil then return nil end
 
     -- Mod actions are keyed by string name; game actions may be keyed by their
@@ -2502,14 +2523,29 @@ function EnhancedHelpMenu:getBindings(actionName)
 
     local parts = {}
     local seen  = {}
+    local grouped = not plainText and (self.selectedDeviceKey == DEVICE_KEY_ALL
+        or self.selectedDeviceKey == DEVICE_KEY_PERIPHERALS)
 
     if actionDef.activeBindings ~= nil then
         for _, binding in pairs(actionDef.activeBindings) do
-            if binding ~= nil and self:bindingMatchesDevice(binding) then
+            if binding ~= nil and (fallback or self:bindingMatchesDevice(binding)) then
                 local s = binding.inputString
-                if s ~= nil and s ~= "" and not seen[s] then
-                    seen[s] = true
-                    table.insert(parts, self:formatInput(s))
+                if s ~= nil and s ~= "" then
+                    local deviceId
+                    if grouped and not isKeyboardMouse(binding) then
+                        local deviceName = self:getDeviceLabel(binding)
+                        deviceId = deviceName and GROUPED_DEVICE_IDS[string.upper(deviceName)]
+                    end
+                    local key = deviceId and ((self:getDeviceKey(binding) or deviceId) .. "\0" .. s) or s
+                    if not seen[key] then
+                        seen[key] = true
+                        local formatted = self:formatInput(s)
+                        if fallback then return formatted end
+                        if deviceId ~= nil then
+                            formatted = deviceId .. DEVICE_BADGE_SEPARATOR .. formatted:gsub("BTN (%d+)", "%1")
+                        end
+                        table.insert(parts, formatted)
+                    end
                 end
             end
         end
@@ -3572,6 +3608,10 @@ function EnhancedHelpMenu:initOverlays()
     local eyeHiddenTex = MOD_DIR .. "textures/ehm_eye_hidden.dds"
     self.ovEyeOpen   = createImageOverlay(eyeOpenTex)
     self.ovEyeHidden = createImageOverlay(eyeHiddenTex)
+    self.deviceBadgeOverlays = {}
+    for _, device in ipairs({"wheel", "panel", "stick"}) do
+        self.deviceBadgeOverlays[device] = createImageOverlay(MOD_DIR .. "textures/ehm_device_" .. device .. ".dds")
+    end
     log("initOverlays: eye icons %s",
         (self.ovEyeOpen ~= nil and self.ovEyeHidden ~= nil) and "loaded" or "FAILED")
 end
@@ -3681,30 +3721,32 @@ end
 -- drawBindingPills / measureBindingWidth -- the helpers can't see draw()'s
 -- shadowed locals, so each one shadows them locally from the same single
 -- scale source.
-function EnhancedHelpMenu:drawPill(lx, botY, text, alpha)
+local function bindingPillMetrics(text, scale, compact)
+    local size = SIZE_TEXT * scale
+    local padding = (compact and 5 * PX or KEY_PAD_X) * scale
+    local width = math.max(safeTextWidth(size, text) + 2 * padding, KEY_CAP_W * scale * 2 + PX)
+    return width, size
+end
+
+function EnhancedHelpMenu:drawPill(lx, botY, text, alpha, background)
     alpha = alpha or 1.0
     local scale = self.uiScale or 1
-    local ROW_H, SIZE_TEXT, KEY_PAD_X, KEY_CAP_W, TEXT_OY =
-        ROW_H * scale, SIZE_TEXT * scale, KEY_PAD_X * scale, KEY_CAP_W * scale, TEXT_OY * scale
-    local pillH = ROW_H
-    local tw    = safeTextWidth(SIZE_TEXT, text)
-    local pillW = math.max(tw + KEY_PAD_X * 2, KEY_CAP_W * 2 + PX)
-    self:renderKey(lx, botY, pillW, pillH,
-        COL_BG_KEY[1], COL_BG_KEY[2], COL_BG_KEY[3], COL_BG_KEY[4] * alpha)
+    local pillW, size = bindingPillMetrics(text, scale, background ~= nil)
+    local pillH = (background ~= nil and 18 * PY or ROW_H) * scale
+    local y = botY + (ROW_H * scale - pillH) * 0.5
+    local color = background or COL_BG_KEY
+    self:renderKey(lx, y, pillW, pillH, color[1], color[2], color[3], color[4] * alpha)
     self:setColor(COL_WHITE, alpha)
-    renderText(lx + KEY_PAD_X, botY + TEXT_OY, SIZE_TEXT, text)
+    renderText(lx + (pillW - safeTextWidth(size, text)) * 0.5, botY + TEXT_OY * scale, size, text)
     if setTextBold ~= nil then setTextBold(false) end
     return lx + pillW
 end
 
 -- Draws a key pill right-anchored at rx. Returns the left edge x.
-function EnhancedHelpMenu:drawPillRight(rx, botY, text, alpha)
+function EnhancedHelpMenu:drawPillRight(rx, botY, text, alpha, background)
     local scale = self.uiScale or 1
-    local SIZE_TEXT, KEY_PAD_X, KEY_CAP_W =
-        SIZE_TEXT * scale, KEY_PAD_X * scale, KEY_CAP_W * scale
-    local tw    = safeTextWidth(SIZE_TEXT, text)
-    local pillW = math.max(tw + KEY_PAD_X * 2, KEY_CAP_W * 2 + PX)
-    self:drawPill(rx - pillW, botY, text, alpha)
+    local pillW = bindingPillMetrics(text, scale, background ~= nil)
+    self:drawPill(rx - pillW, botY, text, alpha, background)
     return rx - pillW
 end
 
@@ -3769,6 +3811,55 @@ local function splitBinding(binding)
     return result
 end
 
+local DEVICE_BADGES = {
+    wheel = {
+        color = {0.08, 0.23, 0.42, 0.94},
+        fallback = "V",
+    },
+    panel = {
+        color = {0.34, 0.19, 0.05, 0.94},
+        fallback = "P",
+    },
+    stick = {
+        color = {0.07, 0.29, 0.21, 0.94},
+        fallback = "F",
+    },
+}
+
+local function getBindingBadge(firstKey)
+    local separator = firstKey:find(DEVICE_BADGE_SEPARATOR, 1, true)
+    if separator == nil then return nil, firstKey end
+    local device = firstKey:sub(1, separator - 1)
+    return DEVICE_BADGES[device], firstKey:sub(separator + 1), device
+end
+
+local function getDeviceBadgeWidth(scale)
+    return math.max(19 * PX * scale, KEY_CAP_W * scale * 2 + PX)
+end
+
+function EnhancedHelpMenu:drawDeviceBadgeRight(rx, botY, badge, device, alpha)
+    local scale = self.uiScale or 1
+    local width = getDeviceBadgeWidth(scale)
+    local height = 18 * PY * scale
+    local x = rx - width
+    local color = badge.color
+    local y = botY + (ROW_H * scale - height) * 0.5
+    self:renderKey(x, y, width, height, color[1], color[2], color[3], color[4] * alpha)
+
+    local overlay = self.deviceBadgeOverlays and self.deviceBadgeOverlays[device]
+    if overlay ~= nil then
+        local iconW, iconH = 17 * PX * scale, 17 * PY * scale
+        setOverlayColor(overlay, 1, 1, 1, alpha)
+        renderOverlay(overlay, x + (width - iconW) * 0.5, y + (height - iconH) * 0.5, iconW, iconH)
+    else
+        local size = SIZE_TEXT * scale
+        self:setColor(COL_WHITE, alpha)
+        renderText(x + (width - safeTextWidth(size, badge.fallback)) * 0.5,
+            botY + TEXT_OY * scale, size, badge.fallback)
+    end
+    return x
+end
+
 -- Draws all binding pills for an action row, right-anchored at rx.
 -- Handles combos (LSHIFT + TAB) and alternates (1  |  2).
 function EnhancedHelpMenu:drawBindingPills(rx, botY, binding, alpha)
@@ -3800,8 +3891,10 @@ function EnhancedHelpMenu:drawBindingPills(rx, botY, binding, alpha)
     -- draw right-to-left
     for gi = #groups, 1, -1 do
         local keys = groups[gi]
+        local badge, firstKey, device = getBindingBadge(keys[1])
         for ki = #keys, 1, -1 do
-            cx = self:drawPillRight(cx, botY, keys[ki], alpha)
+            local key = ki == 1 and firstKey or keys[ki]
+            cx = self:drawPillRight(cx, botY, key, alpha, badge and badge.color)
             if ki > 1 then
                 -- "+" between chord keys -- bold, full alpha, vertically
                 -- centered. Left-padded by SEP_PAD inside the plusW flow
@@ -3812,6 +3905,9 @@ function EnhancedHelpMenu:drawBindingPills(rx, botY, binding, alpha)
                 renderText(cx + SEP_PAD, botY + TEXT_OY, SIZE_TEXT, "+")
                 if setTextBold ~= nil then setTextBold(false) end
             end
+        end
+        if badge ~= nil then
+            cx = self:drawDeviceBadgeRight(cx - SEP_PAD, botY, badge, device, alpha)
         end
         if gi > 1 then
             -- "|" between binding groups -- 2px drawn line, 70% row
@@ -3920,7 +4016,7 @@ local function computeRowLayout(item, contentW, ehm)
     -- Greedily fill row 1 with complete binding groups alongside label.
     -- Groups that don't fit move to row 2. A group is never split mid-combo.
     local groups = displayBinding ~= nil and splitBinding(displayBinding) or {}
-    local sepW   = safeTextWidth(SIZE_TEXT, "|") + SEP_PAD
+    local sepW   = math.max(2 * PX, 0.000521 * 2) + SEP_PAD * 2
     local r1G, r2G = {}, {}
     local r1W, r1Available = 0, contentW - labelW - LABEL_GAP
     for gi, keys in ipairs(groups) do
@@ -3947,8 +4043,7 @@ end
 function EnhancedHelpMenu:measureBindingWidth(binding)
     if binding == nil then return 0 end
     local scale = self.uiScale or 1
-    local SIZE_TEXT, SEP_PAD, KEY_PAD_X, KEY_CAP_W =
-        SIZE_TEXT * scale, SEP_PAD * scale, KEY_PAD_X * scale, KEY_CAP_W * scale
+    local SIZE_TEXT, SEP_PAD = SIZE_TEXT * scale, SEP_PAD * scale
     local groups = splitBinding(binding)
     -- Match drawBindingPills's flow widths: visible element + 2*SEP_PAD.
     local sepLineW = math.max(2 * PX, 0.000521 * 2)
@@ -3958,9 +4053,10 @@ function EnhancedHelpMenu:measureBindingWidth(binding)
     if setTextBold ~= nil then setTextBold(false) end
     local total = 0
     for gi, keys in ipairs(groups) do
+        local badge, firstKey = getBindingBadge(keys[1])
+        if badge ~= nil then total = total + getDeviceBadgeWidth(scale) + SEP_PAD end
         for ki, key in ipairs(keys) do
-            local tw    = safeTextWidth(SIZE_TEXT, key)
-            local pillW = math.max(tw + KEY_PAD_X * 2, KEY_CAP_W * 2 + PX)
+            local pillW = bindingPillMetrics(ki == 1 and firstKey or key, scale, badge ~= nil)
             total = total + pillW
             if ki > 1 then total = total + plusW end
         end
@@ -4533,10 +4629,13 @@ function EnhancedHelpMenu:draw()
 
     -- Key bindings and device label — used across both header rows.
     -- (keyToggle for the F1 pill was removed in v1.13.0.6; F1 is universal.)
-    local keyDevice   = self:getBindings("EHM_CYCLE_DEVICE") or "?"
-    local keyPrev     = self:getBindings("EHM_PAGE_PREV")    or "?"
-    local keyNext     = self:getBindings("EHM_PAGE_NEXT")    or "?"
-    local keyFilter   = self:getBindings("EHM_UI_MODE")      or "?"
+    local function shortcut(actionName)
+        return self:getBindings(actionName, true) or self:getBindings(actionName, true, true) or "?"
+    end
+    local keyDevice   = shortcut("EHM_CYCLE_DEVICE")
+    local keyPrev     = shortcut("EHM_PAGE_PREV")
+    local keyNext     = shortcut("EHM_PAGE_NEXT")
+    local keyFilter   = shortcut("EHM_UI_MODE")
     local device      = self.deviceModes[self.deviceModeIndex]
     local deviceLabel = device ~= nil and string.upper(device.label) or "?"
 
@@ -4897,7 +4996,7 @@ function EnhancedHelpMenu:draw()
                 -- prefix in the dimmer COL_HOLD weight.
                 local pill = self.extraTextPills and self.extraTextPills[etext]
                 if pill ~= nil and pill.binding ~= nil then
-                    local rx     = x + width
+                    local rx     = rightX
                     local holdTx = pill.hold and (pill.hold .. " ") or nil
                     local hpfxW  = holdTx and safeTextWidth(SIZE_TEXT, holdTx) or 0
                     local pillsW = self:measureBindingWidth(pill.binding)
@@ -4922,7 +5021,7 @@ function EnhancedHelpMenu:draw()
     local actY      = actionTop
     local barPadY   = 3 * PY  -- vertical inset for accent bar
 
-    local bindRx = x + width  -- right edge for pill anchoring (constant)
+    local bindRx = rightX
 
     for i = startIdx, endIdx do
         local item   = self.actions[i]
