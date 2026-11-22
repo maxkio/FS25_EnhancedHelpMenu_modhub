@@ -2230,6 +2230,12 @@ end
 -- ---------------------------------------------------------------------------
 
 local DEVICE_KEY_ALL = "__ALL__"  -- sentinel; never a real deviceId
+local DEVICE_KEY_PERIPHERALS = "__PERIPHERALS__"
+
+local function isKeyboardMouse(binding)
+    return binding.isKeyboard == true or binding.isMouse == true
+        or tostring(binding.deviceId) == "KB_MOUSE_DEFAULT"
+end
 
 function EnhancedHelpMenu:getDeviceKey(binding)
     if binding ~= nil and binding.deviceId ~= nil then
@@ -2279,6 +2285,8 @@ end
 function EnhancedHelpMenu:rebuildDeviceModes()
     local modes = {}
     local seen  = {}
+    local peripheralKeys = {}
+    local peripheralCount = 0
 
     if g_inputBinding ~= nil and g_inputBinding.nameActions ~= nil then
         for _, actionDef in pairs(g_inputBinding.nameActions) do
@@ -2290,6 +2298,10 @@ function EnhancedHelpMenu:rebuildDeviceModes()
                         if label ~= nil then
                             seen[key] = true
                             table.insert(modes, { key = key, label = label })
+                            if not isKeyboardMouse(binding) then
+                                peripheralKeys[key] = true
+                                peripheralCount = peripheralCount + 1
+                            end
                         end
                     end
                 end
@@ -2303,6 +2315,13 @@ function EnhancedHelpMenu:rebuildDeviceModes()
     -- and would only add a confusing extra step to the F10 / HOME cycle.
     if #modes >= 2 then
         table.insert(modes, { key = DEVICE_KEY_ALL, label = l10n("EHM_UI_ALL_DEVICES", "ALL") })
+    end
+    if peripheralCount >= 2 then
+        table.insert(modes, {
+            key = DEVICE_KEY_PERIPHERALS,
+            label = l10n("EHM_UI_PERIPHERALS_ONLY", "ALL EXCEPT KB/MOUSE"),
+            deviceKeys = peripheralKeys,
+        })
     end
 
     -- Log device list only when it changes (not on every 500ms rebuild)
@@ -2343,6 +2362,10 @@ function EnhancedHelpMenu:bindingMatchesDevice(binding)
     local mode = self.deviceModes[self.deviceModeIndex]
     if mode == nil then return true end
     if mode.key == DEVICE_KEY_ALL then return true end
+    if mode.key == DEVICE_KEY_PERIPHERALS then
+        return binding ~= nil and not isKeyboardMouse(binding)
+            and mode.deviceKeys[self:getDeviceKey(binding)] == true
+    end
     return self:getDeviceKey(binding) == mode.key
 end
 
@@ -2784,7 +2807,9 @@ function EnhancedHelpMenu:rebuild()
 
                                 currentActive[actionName] = true
 
-                                if not isHidden or self.uiMode then
+                                local binding = self:getBindings(actionName)
+                                if (not isHidden or self.uiMode)
+                                    and (self.selectedDeviceKey ~= DEVICE_KEY_PERIPHERALS or binding ~= nil) then
 
                                     -- Determine suppression:
                                     --   silentRebuild: baseline rebuild — nothing should flash.
@@ -2812,7 +2837,7 @@ function EnhancedHelpMenu:rebuild()
                                     table.insert(currentList, {
                                         name      = actionName,
                                         label     = label,
-                                        binding   = self:getBindings(actionName),
+                                        binding   = binding,
                                         priority  = tonumber(event.displayPriority) or 999,
                                         order     = tonumber(event.orderValue)      or 999,
                                         isVisible = event.displayIsVisible == true,
